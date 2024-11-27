@@ -1,0 +1,3 @@
+hostname: pve.example.com
+username: root@pam
+password: XXX-CHANGE-ME-XXX
