@@ -8,6 +8,8 @@ import sys
 import time
 import yaml
 
+from lib.log import *
+
 
 class ProxmoxNode(object):
     def __init__(self, host, user, password, pool=''):
@@ -47,7 +49,7 @@ class ProxmoxNode(object):
         i = 0
         while i < 30 and self.node.qemu(id).status.current.get().get('status') == 'running':
             if not i:
-                print('Stopping VM', id)
+                info('Stopping VM', id)
             self.node.qemu(id).status.stop.post()
             time.sleep(1)
             i += 1
@@ -57,11 +59,6 @@ class ProxmoxNode(object):
         self.node.qemu(id).config.set(**options)
 
 
-def error(*msg):
-    print('ERROR:', *msg)
-    sys.exit(1)
-
-
 def parse_arguments():
     """Get commandline arguments."""
     parser = argparse.ArgumentParser('Deploy VMs on Proxmox')
@@ -69,12 +66,16 @@ def parse_arguments():
                         help='Configuration file name')
     parser.add_argument('-d', '--deployment', required=True,
                         help='Deployment description URL (yaml format)')
+    parser.add_argument('-x', '--exclude', action='append', default=[],
+                        help='Exclude virtual machines from being processed')
     parser.add_argument('--nic-type', default='virtio',
                         help='Type of virtual NICs')
     parser.add_argument('--force-delete', action='store_true',
                         help='Delete existing VMs on deployment')
     parser.add_argument('--autostart', action='store_true',
                         help='Automatically start VMs after deployment')
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable debug messages')
     parser.add_argument('vm', help='VM name', nargs='*')
     return parser.parse_args()
 
@@ -127,12 +128,16 @@ def create_vm(vm, config, deployment, args):
             vm_options[f'net{i}'] = f'{args.nic_type},bridge={bridge}'
         i += 1
 
-    print('Create VM:', vm_name)
-    proxmox_node = ProxmoxNode(
-        config.get('hostname'),
-        config.get('username'),
-        config.get('password'),
-        config.get('pool'))
+    info('Creating VM:', vm_name)
+    try:
+        proxmox_node = ProxmoxNode(
+            config.get('hostname'),
+            config.get('username'),
+            config.get('password'),
+            config.get('pool'))
+    except requests.exceptions.JSONDecodeError:
+        error('Cannot connect to Proxmox server', config.get('hostname'))
+
     template_name = vm.get('template')
     if not template_name:
         error('No template name for VM provided:', vm_name)
@@ -151,7 +156,7 @@ def create_vm(vm, config, deployment, args):
 
     proxmox_node.clone(template_id, vm_id)
     time.sleep(1)
-    print('vm_options:', vm_options)
+    debug('vm_options:', vm_options)
     proxmox_node.set_options(vm_id, vm_options)
     if args.autostart:
         proxmox_node.start(vm_id)
@@ -159,14 +164,17 @@ def create_vm(vm, config, deployment, args):
 
 def main():
     args = parse_arguments()
+    if args.debug:
+        set_debug()
     config = load_config(args.config)
     deployment = load_deployment(args.deployment)
     vms = deployment.get('vms')
-    vm_names = [vm.get('name') for vm in vms]
     for vm in vms:
         if args.vm:
             if vm.get('name') not in args.vm:
                 continue
+        if vm.get('name') in args.exclude:
+            continue
         create_vm(vm, config, deployment, args)
 
 
