@@ -95,7 +95,7 @@ def load_deployment(url):
 def create_vm(vm, config, deployment, args):
     vm_name = vm['name']
     vm_id = vm['id']
-    vm_options = deployment.get('global', {}).get('options', {})
+    vm_options = deployment.get('global', {}).get('options', {}).copy()
     vm_options.update(vm.get('options', {}))
     vm_name = f"{deployment['deployment']}-{vm_name}"
     vm_options['vmid'] = vm_id
@@ -152,7 +152,6 @@ def create_vm(vm, config, deployment, args):
                 error('VM names do not match. Do not delete old VM:', old_name)
         else:
             error(f'VM already exists: {vm_name} ({vm_id})')
-
 
     proxmox_node.clone(template_id, vm_id)
     time.sleep(1)
