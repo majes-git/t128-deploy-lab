@@ -40,6 +40,7 @@ class ProxmoxNode(object):
         return vm['name']
 
     def clone(self, template_id, vm_id):
+        info('Cloning VM', id)
         self.node.qemu(template_id).clone.create(newid=vm_id, pool=self.pool)
 
     def start(self, id):
@@ -68,6 +69,8 @@ def parse_arguments():
                         help='Deployment description URL (yaml format)')
     parser.add_argument('-x', '--exclude', action='append', default=[],
                         help='Exclude virtual machines from being processed')
+    parser.add_argument('-r', '--remove', action='store_true',
+                        help='Remove virtual machines of a previously run ')
     parser.add_argument('--nic-type', default='virtio',
                         help='Type of virtual NICs')
     parser.add_argument('--force-delete', action='store_true',
@@ -76,6 +79,8 @@ def parse_arguments():
                         help='Automatically start VMs after deployment')
     parser.add_argument('--debug', action='store_true',
                         help='Enable debug messages')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Do not create or remove virtual machines - just show task')
     parser.add_argument('vm', help='VM name', nargs='*')
     return parser.parse_args()
 
@@ -92,7 +97,7 @@ def load_deployment(url):
     error('Cannot load deployment description from URL:', url)
 
 
-def create_vm(vm, config, deployment, args):
+def create_vm(proxmox_node, vm, config, deployment, args):
     vm_name = vm['name']
     vm_id = vm['id']
     vm_options = deployment.get('global', {}).get('options', {}).copy()
@@ -128,16 +133,6 @@ def create_vm(vm, config, deployment, args):
             vm_options[f'net{i}'] = f'{args.nic_type},bridge={bridge}'
         i += 1
 
-    info('Creating VM:', vm_name)
-    try:
-        proxmox_node = ProxmoxNode(
-            config.get('hostname'),
-            config.get('username'),
-            config.get('password'),
-            config.get('pool'))
-    except requests.exceptions.JSONDecodeError:
-        error('Cannot connect to Proxmox server', config.get('hostname'))
-
     template_name = vm.get('template')
     if not template_name:
         error('No template name for VM provided:', vm_name)
@@ -167,14 +162,36 @@ def main():
         set_debug()
     config = load_config(args.config)
     deployment = load_deployment(args.deployment)
+    dry_run_string = ''
+    if args.dry_run:
+        dry_run_string = '(dry-run)'
     vms = deployment.get('vms')
+
+    try:
+        proxmox_node = ProxmoxNode(
+            config.get('hostname'),
+            config.get('username'),
+            config.get('password'),
+            config.get('pool'))
+    except requests.exceptions.JSONDecodeError:
+        error('Cannot connect to Proxmox server', config.get('hostname'))
+
     for vm in vms:
+        vm_name = vm.get('name')
+        vm_id = vm.get('id')
         if args.vm:
-            if vm.get('name') not in args.vm:
+            if vm_name not in args.vm:
                 continue
-        if vm.get('name') in args.exclude:
+        if vm_name in args.exclude:
             continue
-        create_vm(vm, config, deployment, args)
+        if args.remove:
+            info(f'Removing VM: {vm_name} (id: {vm_id})', dry_run_string)
+            if not args.dry_run:
+                proxmox_node.destroy(vm_id)
+        else:
+            info('Creating VM:', vm_name, dry_run_string)
+            if not args.dry_run:
+                create_vm(proxmox_node, vm, config, deployment, args)
 
 
 if __name__ == '__main__':
