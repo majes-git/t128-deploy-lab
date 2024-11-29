@@ -40,7 +40,7 @@ class ProxmoxNode(object):
         return vm['name']
 
     def clone(self, template_id, vm_id):
-        info('Cloning VM', id)
+        info('Cloning VM', vm_id)
         self.node.qemu(template_id).clone.create(newid=vm_id, pool=self.pool)
 
     def start(self, id):
