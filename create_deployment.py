@@ -2,6 +2,7 @@
 
 import argparse
 import base64
+import os
 import proxmoxer
 import requests
 import sys
@@ -65,7 +66,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser('Deploy VMs on Proxmox')
     parser.add_argument('-c', '--config', default='config.yaml',
                         help='Configuration file name')
-    parser.add_argument('-d', '--deployment', required=True,
+    parser.add_argument('-d', '--deployment',
                         help='Deployment description URL (yaml format)')
     parser.add_argument('-x', '--exclude', action='append', default=[],
                         help='Exclude virtual machines from being processed')
@@ -158,6 +159,12 @@ def create_vm(proxmox_node, vm, config, deployment, args):
 
 def main():
     args = parse_arguments()
+    if not args.deployment:
+        environment_url = os.environ.get('DEPLOYMENT_URL')
+        if environment_url:
+            args.deployment = environment_url
+        else:
+            error('Must specify --deployment or set DEPLOYMENT_URL in environment.')
     if args.debug:
         set_debug()
     config = load_config(args.config)
