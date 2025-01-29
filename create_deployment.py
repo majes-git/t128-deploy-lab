@@ -74,6 +74,7 @@ def parse_arguments():
                         help='Remove virtual machines of a previously run ')
     parser.add_argument('--nic-type', default='virtio',
                         help='Type of virtual NICs')
+    parser.add_argument('--range', help='range of VM IDs to process')
     parser.add_argument('--force-delete', action='store_true',
                         help='Delete existing VMs on deployment')
     parser.add_argument('--autostart', action='store_true',
@@ -183,9 +184,16 @@ def main():
     except requests.exceptions.JSONDecodeError:
         error('Cannot connect to Proxmox server', config.get('hostname'))
 
+    _range = []
+    if args.range:
+        _range = range(*[int(e) for e in args.range.split(',')])
+
     for vm in vms:
-        vm_name = vm.get('name')
         vm_id = vm.get('id')
+        if _range and vm_id not in _range:
+            continue
+
+        vm_name = vm.get('name')
         if args.vm:
             if vm_name not in args.vm:
                 continue
