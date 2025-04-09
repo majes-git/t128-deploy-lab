@@ -62,14 +62,21 @@ class ProxmoxNode(object):
     def set_base_id(self, base_id):
         self.base_id = base_id
 
-    def get_network_name(self, num):
-        if type(num) == int:
-            iface_number = self.base_id + num
-            return f'vmbr{iface_number}'
-        elif type(num) == str:
-            if num.startswith('vmbr'):
-                return num
-        error('Unexpected type', __func__)
+    def get_network_name(self, network):
+        while True:
+            if type(network) == int:
+                iface_number = self.base_id + network
+                return f'vmbr{iface_number}'
+            elif type(network) == str:
+                if network.startswith('vmbr'):
+                    return network
+                elif ',' in network:
+                    network = network.split(',')[0]
+                    if network.isdecimal():
+                        network = int(network)
+                        continue
+            break
+        error('Unexpected type - type(num)', type(num))
 
     def get_networks(self):
         networks = []
@@ -80,7 +87,6 @@ class ProxmoxNode(object):
         self.networks = networks
 
     def get_unbound_networks(self):
-        from pprint import pprint
         bound_networks = set()
         for vm in self.node.qemu.get():
             for key, value in self.node.qemu(vm['vmid']).config().get().items():
@@ -162,6 +168,8 @@ def parse_arguments():
                         help='Enable debug messages')
     parser.add_argument('--dry-run', action='store_true',
                         help='Do not create or remove virtual machines - just show task')
+    parser.add_argument('--base-id', type=int,
+                        help='Override base_id - not recommended')
     parser.add_argument('vm', help='VM name', nargs='*')
     return parser.parse_args()
 
@@ -307,20 +315,19 @@ def main():
         # no persistent deployment data found in node's description field - let's initialize it
         node_deployments_dict = {}
 
-    try:
-        multiplier = node_deployments_dict[deployment_name]
-    except KeyError:
-        if args.remove:
-            error(f'Deployment "{deployment_name}" was not implemented on host "{hostname}".')
-        multiplier = len(node_deployments) + 1
-        node_deployments.append({deployment_name: multiplier})
-        proxmox_node.set_node_deployments(node_deployments)
-    base_id = multiplier * 10000
-    #print('base_id:', base_id)
+    if args.base_id:
+        base_id = args.base_id
+    else:
+        try:
+            multiplier = node_deployments_dict[deployment_name]
+        except KeyError:
+            if args.remove:
+                error(f'Deployment "{deployment_name}" was not implemented on host "{hostname}".')
+            multiplier = len(node_deployments) + 1
+            node_deployments.append({deployment_name: multiplier})
+            proxmox_node.set_node_deployments(node_deployments)
+        base_id = multiplier * 10000
     proxmox_node.set_base_id(base_id)
-
-    # proxmox_node.create_network(111, 'foo')
-    # return
 
     _range = []
     if args.range:
