@@ -1,0 +1,160 @@
+#cloud-config
+user: root
+disable_root: False
+chpasswd:
+  expire: False
+manage_etc_hosts: true
+
+write_files:
+- path: /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+  content: |
+    network: {config: disabled}
+- path: /etc/sysctl.d/01-ip-forward.conf
+  content: |
+    net.ipv4.ip_forward=1
+- path: /root/cloud-init-firstboot/01-base.bash
+  content: |
+    #!/bin/bash
+    # evalute options from dmi.product_serial
+    declare -A options
+    for option in $(sed -e 's/;/ /g' /sys/class/dmi/id/product_serial); do
+        options[$(echo "$option" | cut -d= -f1)]=$(echo "$option" | cut -d= -f2-)
+        echo "option: $option" >> /root/options.txt
+    done
+
+    # set hostname
+    if [ -n "${options[hostname]}" ]; then
+        hostnamectl set-hostname "${options[hostname]}"
+    fi
+
+    # set deployment_url
+    if [ -n "${options[deployment_url]}" ]; then
+        echo "${options[deployment_url]}" > /etc/deployment_url
+    fi
+
+    # set ip address to first network interface
+    if [ -n "${options[ip]}" ]; then
+        # find first ethernet interface
+        device=$(cd /sys/class/net/; for dev in e*; do echo $dev; break; done)
+
+        # create network.yaml
+        {
+            echo "network:"
+            echo "  version: 2"
+            echo "  ethernets:"
+            #echo "    $device:"
+            echo "    eth0:"
+            echo "      addresses:"
+            echo "      - ${options[ip]}"
+            if [ -n "${options[gw]}" ]; then
+                echo -e "      gateway4: ${options[gw]}"
+            fi
+            echo -e "      nameservers:"
+            echo -e "        addresses:"
+            for ns in 8.8.8.8 1.1.1.1; do
+                echo -e "        - $ns"
+            done
+            echo "    eth1:"
+            echo "      addresses:"
+            echo "      - 100.100.100.100/24"
+        } > /root/network.yaml
+
+        # initialize network config
+        cloud-init devel net-convert -k yaml -p /root/network.yaml -d / -D debian -O netplan
+    fi
+  #owner: 'root:root'
+  permissions: '0700'
+- path: /root/cloud-init-firstboot/02-extra-packages.bash
+  content: |
+    #!/bin/bash
+    apt update
+    DEBIAN_FRONTEND=noninteractive apt install -y dnsmasq iptables-persistent yq
+  permissions: '0700'
+- path: /root/cloud-init-firstboot/11-dnsmasq.bash
+  content: |
+    #!/bin/bash
+    {
+        echo "bind-interfaces"
+        echo "dhcp-authoritative"
+        echo "dhcp-range=100.100.100.21,100.100.100.99,1h"
+        echo "interface=eth1"
+        echo "server=8.8.8.8"
+        echo "server=1.1.1.1"
+    } > /etc/dnsmasq.conf
+  permissions: '0700'
+- path: /root/cloud-init-firstboot/12-firewall.bash
+  content: |
+    #!/bin/bash
+    iptables -t nat -A POSTROUTING -s 100.100.100.0/24 -j MASQUERADE
+    iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 443 -j DNAT --to 100.100.100.101:443
+    iptables -t nat -A POSTROUTING -d 100.100.100.101 -p tcp --dport 443 -j MASQUERADE
+    netfilter-persistent save
+  permissions: '0700'
+- path: /root/cloud-init-firstboot/13-t128-nocloud-net.bash
+  content: |
+    #!/bin/bash
+
+    # create systemd service file
+    {
+        echo "[Unit]"
+        echo "Description=Provide meta-data and user-data to cloud-init lab VMs"
+        echo ""
+        echo "[Service]"
+        echo "ExecStart=/var/lib/t128-nocloud-net/t128-nocloud-net.pyz -d '$(sed -e 's/%/%%/g' /etc/deployment_url)'"
+        echo "Restart=on-failure"
+        echo "RestartSec=5"
+        echo ""
+        echo "[Install]"
+        echo "WantedBy=multi-user.target"
+    } > /lib/systemd/system/t128-nocloud-net.service
+
+    # install t128-deploy-lab
+    mkdir /var/lib/t128-nocloud-net
+    cd /var/lib/t128-nocloud-net
+    curl -sSJLO https://github.com/majes-git/t128-nocloud-net/raw/main/t128-nocloud-net.pyz
+    chmod +x t128-nocloud-net.pyz
+    systemctl enable t128-nocloud-net
+    systemctl daemon-reload
+    systemctl start t128-nocloud-net
+  permissions: '0700'
+- path: /root/cloud-init-firstboot/90-ssh_authorized_keys.bash
+  content: |
+    #!/bin/bash
+    if [ -s /etc/deployment_url ]; then
+        mkdir -p /root/.ssh
+        keys=$(curl -sS $(cat /etc/deployment_url) | yq '.global.root_ssh_key' | tr -d '"')
+        if [ "${keys#http://}" != "$keys" -o "${keys#https://}" != "$keys" ]; then
+            # web url is configured -> download it
+            curl -sSo /root/.ssh/authorized_keys $keys
+        else
+            # ... otherwise write string from deployment configuration
+            echo $keys > /root/.ssh/authorized_keys
+        fi
+        chmod go-rw /root/.ssh/ /root/.ssh/authorized_keys
+    fi
+  permissions: '0700'
+- path: /root/cloud-init-firstboot/91-shell-aliases.bash
+  content: |
+    #!/bin/bash
+    echo "alias ssh-test='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR'" >> /root/.bashrc
+  permissions: '0700'
+- path: /root/cloud-init-firstboot/92-root-password.bash
+  content: |
+    #!/bin/bash
+    while ! curl -sSI localhost:8000/jumper/user-data >/dev/null 2>&-; do echo Waiting for t128-nocloud-net; sleep 3; done
+    hash="$(curl -sS localhost:8000/jumper/user-data | sed -n 's/^password: //p')"
+    if [ -n "$hash" ]; then
+        usermod --password "$hash" root
+        echo "Changed root password hash to: $hash"
+    fi
+  permissions: '0700'
+- path: /root/cloud-init-firstboot/99-reboot.bash
+  content: |
+    #!/bin/bash
+    sed -i '/^GRUB_CMDLINE_LINUX=/s/"$/ net.ifnames=0"/' /etc/default/grub
+    update-grub
+    reboot
+  permissions: '0700'
+
+runcmd:
+- for script in /root/cloud-init-firstboot/*; do echo "Running $script..."; $script; done
