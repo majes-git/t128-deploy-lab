@@ -11,6 +11,7 @@ import time
 import yaml
 
 from lib.log import *
+from setuptools.package_index import unique_values
 
 NETWORK_DELAY = 3
 
@@ -28,7 +29,12 @@ class ProxmoxNode(object):
         self.base_id = 0
         self.get_networks()
 
-    def find_template_id(self, template_name):
+    def find_template_id(self, template_name, ssr_default):
+        # replace actual ssr_default template name
+        if ssr_default:
+            if template_name == 'ssr-default':
+                template_name = ssr_default
+
         for vm in self.node.qemu.get():
             if template_name == vm['name']:
                 return vm['vmid']
@@ -68,13 +74,13 @@ class ProxmoxNode(object):
                 iface_number = self.base_id + network
                 return f'vmbr{iface_number}'
             elif type(network) == str:
+                if ',' in network:
+                    network = network.split(',')[0]
                 if network.startswith('vmbr'):
                     return network
-                elif ',' in network:
-                    network = network.split(',')[0]
-                    if network.isdecimal():
-                        network = int(network)
-                        continue
+                if network.isdecimal():
+                    network = int(network)
+                    continue
             break
         error('Unexpected type - type(num)', type(num))
 
@@ -196,33 +202,56 @@ def confirm(message, force=False):
 
 
 def create_vm(proxmox_node, vm, config, deployment, args):
-    vm_name = vm['name']
+    vm_base_name = vm['name']
     vm_id = vm['id']
     deployment_name = deployment['deployment']
     vm_options = deployment.get('global', {}).get('options', {}).copy()
     vm_options.update(vm.get('options', {}))
-    vm_name = f"{deployment_name}-{vm_name}"
+    vm_name = f"{deployment_name}-{vm_base_name}"
     vm_options['vmid'] = vm_id
     vm_options['name'] = vm_name
+
     if 'serial' in vm_options:
-        serial = vm_options['serial'].format(
-            name=vm_name,
-            id=vm_id,
-            deployment=deployment_name,
-        )
+        serial = vm_options['serial']
         del(vm_options['serial'])
-        vm_options['smbios1'] = 'serial={},base64=1'.format(
-            base64.b64encode(bytes(serial, 'ascii')).decode('ascii'))
+    elif vm_base_name != 'jumper':
+        serial = 'ds=nocloud-net;s=http://100.100.100.100:8000/{name}/'
+    else:
+        serial = ''
+
+    serial = serial.format(
+        name=vm_name,
+        id=vm_id,
+        deployment=deployment_name,
+    )
+
+    # add hostname for generic-jumper
+    if 'ds=nocloud-net' and 'hostname=' not in serial:
+        if serial:
+            serial += ';'
+        serial += f'hostname={vm_name}'
+
+    # add deployment_url for generic-jumper
+    if 'deployment_url=' not in serial:
+        if serial:
+            serial += ';'
+        serial += f'deployment_url={deployment["url"]}'
+
+    vm_options['smbios1'] = 'serial={},base64=1'.format(
+        base64.b64encode(bytes(serial, 'ascii')).decode('ascii'))
 
     # add networks
     i = 0
     key = 'net{}'
     while key.format(i) in vm_options:
         i += 1
-    networks = deployment.get('global', {}).get('networks', []).copy()
+    networks = [100]
+    networks.extend(deployment.get('global', {}).get('networks', []))
     networks.extend(vm.get('networks', []))
     new_network = False
-    for network in networks:
+
+    _unique = lambda l: list(dict.fromkeys(l))
+    for network in _unique(networks):
         network_name = proxmox_node.get_network_name(network)
         if not proxmox_node.has_network(network):
             if confirm(f'Network {network_name} does not exist. Create it', args.force):
@@ -249,7 +278,8 @@ def create_vm(proxmox_node, vm, config, deployment, args):
     template_name = vm.get('template')
     if not template_name:
         error('No template name for VM provided:', vm_name)
-    template_id = proxmox_node.find_template_id(template_name)
+    ssr_default = deployment.get('global', {}).get('ssr_default_template', "")
+    template_id = proxmox_node.find_template_id(template_name, ssr_default)
     if proxmox_node.exists(vm_id):
         if args.force_delete:
             old_name = proxmox_node.get_name(vm_id)
@@ -271,16 +301,18 @@ def create_vm(proxmox_node, vm, config, deployment, args):
 
 def main():
     args = parse_arguments()
-    if not args.deployment:
+    deployment_url = args.deployment
+    if not deployment_url:
         environment_url = os.environ.get('DEPLOYMENT_URL')
         if environment_url:
-            args.deployment = environment_url
+            deployment_url = environment_url
         else:
             error('Must specify --deployment or set DEPLOYMENT_URL in environment.')
     if args.debug:
         set_debug()
     config = load_config(args.config)
-    deployment = load_deployment(args.deployment)
+    deployment = load_deployment(deployment_url)
+    deployment['url'] = deployment_url
     dry_run_string = ''
     if args.dry_run:
         dry_run_string = '(dry-run)'

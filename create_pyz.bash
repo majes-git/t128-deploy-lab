@@ -8,7 +8,9 @@ if python3 -m zipapp --help | grep -q -- --compress; then
     zipapp="$zipapp --compress"
 fi
 
-if [ -d lib ]; then cp -a lib $tmpdir/; fi
+for dir in lib resources templates; do
+    if [ -d $dir ]; then mkdir $tmpdir/$dir; cp $dir/* $tmpdir/$dir/; fi
+done
 
 if [ -z "$requirements" ]; then
   if [ -f requirements.txt ]; then
@@ -20,6 +22,7 @@ if [ -z "$requirements" ]; then
 fi
 if [ -n "$requirements" ]; then
   python3 -m pip install $requirements --target $tmpdir
+  find $tmpdir -name '*.so' -delete
 fi
 
 if [ $# -lt 1 ]; then
@@ -28,12 +31,13 @@ else
   scripts="$@"
 fi
 
-if [ $scripts = "main.py" ]; then
+if [ "$scripts" = "main.py" ]; then
   cp $scripts $tmpdir/__main__.py
   $zipapp --python "/usr/bin/env python3" --output $(basename $(pwd)).pyz $tmpdir
 else
   for script in $scripts; do
     cp $script $tmpdir/__main__.py
+    rm -rf $tmpdir/bin $tmpdir/share
     $zipapp --python "/usr/bin/env python3" --output ${script}z $tmpdir
   done
 fi
