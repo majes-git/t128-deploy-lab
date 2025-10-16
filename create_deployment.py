@@ -147,6 +147,10 @@ class ProxmoxNode(object):
         del(options['vmid'])
         self.node.qemu(id).config.set(**options)
 
+    def resize(self, id, disk, size):
+        vm_id = self.base_id + id
+        self.node.qemu(vm_id).resize.put(disk=disk, size=size)
+
 
 def parse_arguments():
     """Get commandline arguments."""
@@ -225,6 +229,12 @@ def create_vm(proxmox_node, vm, config, deployment, args):
         deployment=deployment_name,
     )
 
+    if 'resize' in vm_options:
+        resize = vm_options['resize']
+        del(vm_options['resize'])
+    else:
+        resize = {}
+
     # add hostname for generic-jumper
     if 'ds=nocloud-net' and 'hostname=' not in serial:
         if serial:
@@ -295,6 +305,9 @@ def create_vm(proxmox_node, vm, config, deployment, args):
     time.sleep(1)
     debug('vm_options:', vm_options)
     proxmox_node.set_options(vm_id, vm_options)
+    for disk, size in resize.items():
+        info(f'Resizing {disk} by {size}')
+        proxmox_node.resize(vm_id, disk, size)
     if args.autostart:
         proxmox_node.start(vm_id)
 
